@@ -156,5 +156,30 @@ export const api = {
     if (endDate) params.append('end_date', endDate);
     const res = await fetch(`${API_URL}/reports/profit-loss?${params}`);
     return res.json();
-  }
+  },
+
+  // Void sale
+  voidSale: async (id, void_reason) => {
+    const res = await fetch(`${API_URL}/sales/${id}/void`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ void_reason })
+    });
+    return res.json();
+  },
+
+  // Stock-In
+  getStockIn: async () => {
+    const res = await fetch(`${API_URL}/stock-in`);
+    return res.json();
+  },
+
+  addStockIn: async (data) => {
+    const res = await fetch(`${API_URL}/stock-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return res.json();
+  },
 };

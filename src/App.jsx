@@ -7,6 +7,7 @@ import Reports from './components/Reports';
 import UserManagement from './components/UserManagement';
 import Suppliers from './components/Suppliers';
 import SalesHistory from './components/SalesHistory';
+import StockIn from './components/StockIn';
 import { api } from './utils/api';
 import {
   Squares2X2Icon,
@@ -22,6 +23,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   UserCircleIcon,
+  ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline';
 
 function App() {
@@ -99,6 +101,7 @@ function App() {
     { key: 'dashboard', label: 'Dashboard', icon: Squares2X2Icon },
     { key: 'inventory', label: 'Inventory', icon: ArchiveBoxIcon },
     { key: 'scanner', label: 'Point of Sale', icon: ShoppingCartIcon },
+    { key: 'stockin', label: 'Stock In', icon: ArrowDownTrayIcon },
     { key: 'sales', label: 'Sales History', icon: ClockIcon },
     { key: 'reports', label: 'Reports', icon: ChartBarIcon },
     { key: 'suppliers', label: 'Suppliers', icon: TruckIcon },
@@ -109,6 +112,7 @@ function App() {
     dashboard: 'Dashboard',
     inventory: 'Inventory Management',
     scanner: 'Point of Sale',
+    stockin: 'Receive Stock',
     sales: 'Sales History',
     reports: 'Reports & Analytics',
     suppliers: 'Supplier Management',
@@ -184,9 +188,10 @@ function App() {
           {activeTab === 'dashboard' && <Dashboard />}
           {activeTab === 'inventory' && <Inventory />}
           {activeTab === 'scanner' && (
-            <Scanner inventory={inventory} currentUser={currentUser} />
+            <Scanner inventory={inventory} currentUser={currentUser} onInventoryChange={setInventory} />
           )}
-          {activeTab === 'sales' && <SalesHistory />}
+          {activeTab === 'stockin' && <StockIn currentUser={currentUser} />}
+          {activeTab === 'sales' && <SalesHistory currentUser={currentUser} />}
           {activeTab === 'reports' && <Reports inventory={inventory} />}
           {activeTab === 'suppliers' && <Suppliers />}
           {activeTab === 'users' && currentUser.role === 'admin' && <UserManagement />}

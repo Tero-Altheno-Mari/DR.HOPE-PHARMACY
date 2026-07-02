@@ -12,7 +12,7 @@ export default function Inventory() {
   const [form, setForm]         = useState({
     item_code: '', product_name: '', brand: '',
     quantity_in_stock: '', cost_price: '', srp: '',
-    expiry_date: '', notes: '', reorder_level: '10',
+    expiry_date: '', notes: '', reorder_level: '10', requires_rx: false,
   });
 
   // import
@@ -228,6 +228,14 @@ export default function Inventory() {
                   />
                 </div>
               ))}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 20 }}>
+                <input type="checkbox" id="requires_rx" checked={form.requires_rx}
+                  onChange={e => setForm({ ...form, requires_rx: e.target.checked })}
+                  style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                <label htmlFor="requires_rx" style={{ fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
+                  Requires Prescription (Rx)
+                </label>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button type="submit" style={{ padding: '9px 20px', background: 'var(--accent-primary)', color: '#fff', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 14 }}>Save</button>

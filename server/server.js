@@ -24,8 +24,58 @@ const pool = mysql.createPool({
 });
 
 pool.getConnection()
-  .then(conn => { console.log('✓ Connected to MySQL database'); conn.release(); })
+  .then(conn => { console.log('✓ Connected to MySQL database'); conn.release(); runMigrations(); })
   .catch(err => console.error('✗ Database connection failed:', err.message));
+
+// ── Auto-migration: safely adds new columns / tables if missing ───────────────
+async function runMigrations() {
+  try {
+    // Helper: add column only if it doesn't exist yet
+    const addColumn = async (table, column, definition) => {
+      const [rows] = await pool.query(
+        `SELECT COUNT(*) as cnt FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [table, column]
+      );
+      if (rows[0].cnt === 0) {
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    };
+
+    await addColumn('inventory', 'requires_rx', 'TINYINT(1) DEFAULT 0');
+    await addColumn('sales', 'discount_type', "VARCHAR(20) DEFAULT 'none'");
+    await addColumn('sales', 'discount_pct', 'DECIMAL(5,2) DEFAULT 0');
+    await addColumn('sales', 'discount_amount', 'DECIMAL(10,2) DEFAULT 0');
+    await addColumn('sales', 'amount_tendered', 'DECIMAL(10,2) DEFAULT NULL');
+    await addColumn('sales', 'rx_patient_name', 'VARCHAR(255) DEFAULT NULL');
+    await addColumn('sales', 'rx_doctor', 'VARCHAR(255) DEFAULT NULL');
+    await addColumn('sales', 'voided', 'TINYINT(1) DEFAULT 0');
+    await addColumn('sales', 'void_reason', 'TEXT DEFAULT NULL');
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS stock_in (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      inventory_id INT NOT NULL,
+      supplier_id INT,
+      quantity INT NOT NULL,
+      cost_price DECIMAL(10,2) DEFAULT 0,
+      expiry_date DATE DEFAULT NULL,
+      reference_no VARCHAR(100) DEFAULT NULL,
+      notes TEXT,
+      received_by INT NOT NULL,
+      received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE CASCADE,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL,
+      FOREIGN KEY (received_by) REFERENCES users(id)
+    )`);
+
+    await pool.query(`INSERT IGNORE INTO users (username, password, role) VALUES
+      ('admin','admin123','admin'), ('staff','staff123','staff')`);
+
+    console.log('✓ Database migrations applied');
+  } catch (e) {
+    console.error('✗ Migration error:', e.message);
+  }
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 app.post('/api/login', async (req, res) => {
@@ -135,11 +185,11 @@ app.get('/api/inventory/expiring-soon', async (req, res) => {
 
 app.post('/api/inventory', async (req, res) => {
   try {
-    const { item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level } = req.body;
+    const { item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level, requires_rx } = req.body;
     const [result] = await pool.query(
-      `INSERT INTO inventory (item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [item_code || null, product_name, brand || null, quantity_in_stock || 0, cost_price || 0, srp || 0, expiry_date || null, supplier_id || null, notes || null, reorder_level || 10]
+      `INSERT INTO inventory (item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level, requires_rx)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [item_code || null, product_name, brand || null, quantity_in_stock || 0, cost_price || 0, srp || 0, expiry_date || null, supplier_id || null, notes || null, reorder_level || 10, requires_rx ? 1 : 0]
     );
     res.json({ id: result.insertId, ...req.body });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -147,10 +197,10 @@ app.post('/api/inventory', async (req, res) => {
 
 app.put('/api/inventory/:id', async (req, res) => {
   try {
-    const { item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level } = req.body;
+    const { item_code, product_name, brand, quantity_in_stock, cost_price, srp, expiry_date, supplier_id, notes, reorder_level, requires_rx } = req.body;
     await pool.query(
-      `UPDATE inventory SET item_code=?, product_name=?, brand=?, quantity_in_stock=?, cost_price=?, srp=?, expiry_date=?, supplier_id=?, notes=?, reorder_level=? WHERE id=?`,
-      [item_code || null, product_name, brand || null, quantity_in_stock || 0, cost_price || 0, srp || 0, expiry_date || null, supplier_id || null, notes || null, reorder_level || 10, req.params.id]
+      `UPDATE inventory SET item_code=?, product_name=?, brand=?, quantity_in_stock=?, cost_price=?, srp=?, expiry_date=?, supplier_id=?, notes=?, reorder_level=?, requires_rx=? WHERE id=?`,
+      [item_code || null, product_name, brand || null, quantity_in_stock || 0, cost_price || 0, srp || 0, expiry_date || null, supplier_id || null, notes || null, reorder_level || 10, requires_rx ? 1 : 0, req.params.id]
     );
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -374,10 +424,11 @@ app.post('/api/sales', async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const { user_id, items, payment_method, total_amount } = req.body;
+    const { user_id, items, payment_method, total_amount, discount_type, discount_pct, discount_amount, amount_tendered, rx_patient_name, rx_doctor } = req.body;
     const [saleResult] = await conn.query(
-      'INSERT INTO sales (user_id, total_amount, payment_method) VALUES (?, ?, ?)',
-      [user_id, total_amount, payment_method]
+      `INSERT INTO sales (user_id, total_amount, payment_method, discount_type, discount_pct, discount_amount, amount_tendered, rx_patient_name, rx_doctor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [user_id, total_amount, payment_method, discount_type||'none', discount_pct||0, discount_amount||0, amount_tendered||null, rx_patient_name||null, rx_doctor||null]
     );
     const saleId = saleResult.insertId;
     for (const item of items) {
@@ -412,7 +463,6 @@ app.get('/api/sales', async (req, res) => {
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 app.get('/api/sales/:id/items', async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -423,6 +473,71 @@ app.get('/api/sales/:id/items', async (req, res) => {
     `, [req.params.id]);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Void Sale ─────────────────────────────────────────────────────────────────
+app.post('/api/sales/:id/void', async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [sales] = await conn.query('SELECT * FROM sales WHERE id = ?', [req.params.id]);
+    if (!sales.length) return res.status(404).json({ error: 'Sale not found' });
+    if (sales[0].voided) return res.status(400).json({ error: 'Sale already voided' });
+
+    const { void_reason } = req.body;
+    // restore stock
+    const [items] = await conn.query('SELECT * FROM sales_items WHERE sale_id = ?', [req.params.id]);
+    for (const item of items) {
+      await conn.query('UPDATE inventory SET quantity_in_stock = quantity_in_stock + ? WHERE id = ?', [item.quantity, item.inventory_id]);
+    }
+    await conn.query('UPDATE sales SET voided = 1, void_reason = ? WHERE id = ?', [void_reason || null, req.params.id]);
+    await conn.commit();
+    res.json({ success: true });
+  } catch (e) {
+    await conn.rollback();
+    res.status(500).json({ error: e.message });
+  } finally { conn.release(); }
+});
+
+// ── Stock-In ──────────────────────────────────────────────────────────────────
+app.get('/api/stock-in', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT si.*, i.product_name, i.item_code, s.name AS supplier_name, u.username AS received_by_name
+      FROM stock_in si
+      JOIN inventory i ON si.inventory_id = i.id
+      LEFT JOIN suppliers s ON si.supplier_id = s.id
+      JOIN users u ON si.received_by = u.id
+      ORDER BY si.received_at DESC
+    `);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/stock-in', async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { inventory_id, supplier_id, quantity, cost_price, expiry_date, reference_no, notes, received_by } = req.body;
+    const [result] = await conn.query(
+      `INSERT INTO stock_in (inventory_id, supplier_id, quantity, cost_price, expiry_date, reference_no, notes, received_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [inventory_id, supplier_id || null, quantity, cost_price || 0, expiry_date || null, reference_no || null, notes || null, received_by]
+    );
+    // update inventory quantity (and cost price + expiry if provided)
+    let updateQuery = 'UPDATE inventory SET quantity_in_stock = quantity_in_stock + ?';
+    const updateParams = [quantity];
+    if (cost_price) { updateQuery += ', cost_price = ?'; updateParams.push(cost_price); }
+    if (expiry_date) { updateQuery += ', expiry_date = ?'; updateParams.push(expiry_date); }
+    updateQuery += ' WHERE id = ?';
+    updateParams.push(inventory_id);
+    await conn.query(updateQuery, updateParams);
+    await conn.commit();
+    res.json({ success: true, id: result.insertId });
+  } catch (e) {
+    await conn.rollback();
+    res.status(500).json({ error: e.message });
+  } finally { conn.release(); }
 });
 
 // ── Reports ───────────────────────────────────────────────────────────────────
@@ -493,6 +608,17 @@ app.get('/api/reports/profit-loss', async (req, res) => {
     `, [start_date || '2024-01-01', end_date || '2099-12-31']);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Debug endpoint: check DB connection ──────────────────────────────────────
+app.get('/api/debug/db-check', async (req, res) => {
+  try {
+    const [users] = await pool.query('SELECT username, role FROM users');
+    const [inventory] = await pool.query('SELECT COUNT(*) as count FROM inventory');
+    res.json({ connected: true, users, inventoryCount: inventory[0].count });
+  } catch (e) {
+    res.status(500).json({ connected: false, error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
